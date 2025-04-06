@@ -138,11 +138,17 @@ def setup_engine(json_path="shl_products.json"):
         tuple: (model, index, data, gemini_api_key)
     """
     try:
-        # Load environment variables
-        load_dotenv()
-        gemini_api_key = os.getenv("GEMINI_API_KEY")
+        # Try to get API key from Streamlit secrets first, then fall back to .env
+        try:
+            import streamlit as st
+            gemini_api_key = st.secrets["GEMINI_API_KEY"]
+        except (ImportError, KeyError):
+            # Fall back to .env file for local development
+            load_dotenv()
+            gemini_api_key = os.getenv("GEMINI_API_KEY")
+            
         if not gemini_api_key:
-            logger.warning("GEMINI_API_KEY not found in environment variables. Query enrichment will be disabled.")
+            logger.warning("GEMINI_API_KEY not found in environment variables or Streamlit secrets. Query enrichment will be disabled.")
         
         # Load data
         logger.info("Loading data...")

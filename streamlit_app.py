@@ -1,11 +1,6 @@
 import streamlit as st
-from engine import setup_engine, get_top_k_recommendations, enrich_query_with_gemini
+from engine import setup_engine, get_top_k_recommendations
 import pandas as pd
-import os
-from dotenv import load_dotenv
-
-# Load environment variables
-load_dotenv()
 
 st.set_page_config(page_title="SHL Test Recommender", layout="wide")
 
@@ -14,28 +9,18 @@ query = st.text_input("Enter your job description or requirement:")
 
 if "engine_ready" not in st.session_state:
     with st.spinner("Setting up engine..."):
-        model, index, data, gemini_api_key = setup_engine()
+        model, index, data = setup_engine()
         st.session_state.update({
             "engine_ready": True,
             "model": model,
             "index": index,
-            "data": data,
-            "gemini_api_key": gemini_api_key
+            "data": data
         })
 
 if query and st.session_state["engine_ready"]:
     with st.spinner("Searching..."):
-        # Enrich the query using Gemini if API key is available
-        if st.session_state["gemini_api_key"]:
-            with st.spinner("Enhancing your query..."):
-                enriched_query = enrich_query_with_gemini(query, st.session_state["gemini_api_key"])
-                st.info(f"🔍 Enhanced query: {enriched_query}")
-        else:
-            enriched_query = query
-            st.warning("⚠️ Query enrichment disabled - GEMINI_API_KEY not found")
-        
         results = get_top_k_recommendations(
-            enriched_query,
+            query,
             st.session_state["model"],
             st.session_state["index"],
             st.session_state["data"]
