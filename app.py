@@ -1,117 +1,39 @@
-import streamlit as st
+import gradio as gr
 from engine import setup_engine, get_top_k_recommendations
 import pandas as pd
-import logging
-import sys
-import time
-import traceback
 
-# Set up logging configuration
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.StreamHandler(sys.stdout)
+# Load the model and index once at the start
+model, index, data = setup_engine()
+
+def recommend(query, top_k):
+    if not query.strip():
+        return pd.DataFrame()
+
+    results = get_top_k_recommendations(query, model, index, data)
+    top_results = results[:top_k]
+
+    df = pd.DataFrame(top_results)[[
+        'assessment_name', 'url', 'remote_testing', 'adaptive_irt', 'duration', 'test_type'
+    ]]
+    df.columns = [
+        "Assessment Name", "URL", "Remote Testing", "Adaptive/IRT", "Duration", "Test Type"
     ]
-)
-logger = logging.getLogger("SHL-Recommender")
+    df["Assessment Name"] = df.apply(
+        lambda row: f"[{row['Assessment Name']}]({row['URL']})", axis=1)
+    df.drop(columns=["URL"], inplace=True)
+    return df
 
-st.set_page_config(page_title="SHL Test Recommender", layout="wide")
+with gr.Blocks(title="SHL Test Recommender") as demo:
+    gr.Markdown("## 🔍 SHL Semantic Test Recommender")
+    query_input = gr.Textbox(label="Enter your job description or requirement:")
+    top_k_radio = gr.Radio([1, 3, 5, 10], label="Top K Recommendations", value=5)
+    recommend_button = gr.Button("Recommend")
+    output_table = gr.Dataframe(label="Recommendations", wrap=True)
 
-logger.info("Starting SHL Test Recommender app")
+    recommend_button.click(
+        recommend,
+        inputs=[query_input, top_k_radio],
+        outputs=output_table
+    )
 
-# Display app title
-st.title("🔍 SHL Semantic Test Recommender")
-query = st.text_input("Enter your job description or requirement:")
-
-# Initialize the engine
-if "engine_ready" not in st.session_state:
-    logger.info("Engine not initialized. Starting initialization...")
-    status_placeholder = st.empty()
-    progress_bar = st.progress(0)
-    
-    try:
-        with st.spinner("Setting up engine..."):
-            status_placeholder.text("Loading model and data...")
-            start_time = time.time()
-            
-            # Log Python and dependency versions
-            logger.info(f"Python version: {sys.version}")
-            logger.info(f"Pandas version: {pd.__version__}")
-            
-            # Setup engine with progress updates
-            progress_bar.progress(10)
-            status_placeholder.text("Loading model and data (10%)...")
-            
-            model, index, data = setup_engine()
-            
-            progress_bar.progress(90)
-            status_placeholder.text("Finalizing setup (90%)...")
-            
-            st.session_state.update({
-                "engine_ready": True,
-                "model": model,
-                "index": index,
-                "data": data
-            })
-            
-            elapsed_time = time.time() - start_time
-            logger.info(f"Engine initialized successfully in {elapsed_time:.2f} seconds")
-            progress_bar.progress(100)
-            status_placeholder.text(f"Setup complete! Loaded {len(data)} assessments.")
-            time.sleep(1)  # Give user time to see the completion message
-            status_placeholder.empty()
-            progress_bar.empty()
-    except Exception as e:
-        error_msg = f"Error initializing engine: {str(e)}"
-        logger.error(error_msg)
-        logger.error(traceback.format_exc())
-        st.error(f"❌ {error_msg}")
-        st.error("Check the logs for more details.")
-
-# Process query if engine is ready
-if query and "engine_ready" in st.session_state and st.session_state["engine_ready"]:
-    logger.info(f"Processing query: '{query}'")
-    try:
-        with st.spinner("Searching..."):
-            start_time = time.time()
-            
-            results = get_top_k_recommendations(
-                query,
-                st.session_state["model"],
-                st.session_state["index"],
-                st.session_state["data"]
-            )
-            
-            elapsed_time = time.time() - start_time
-            logger.info(f"Query processed in {elapsed_time:.2f} seconds, found {len(results)} results")
-            
-            if results:
-                df = pd.DataFrame(results)[[
-                    'assessment_name', 'url', 'remote_testing', 'adaptive_irt', 'duration', 'test_type'
-                ]]
-                df.columns = [
-                    "Assessment Name", "URL", "Remote Testing", "Adaptive/IRT", "Duration", "Test Type"
-                ]
-                df["Assessment Name"] = df.apply(lambda row: f"[{row['Assessment Name']}]({row['URL']})", axis=1)
-                df.drop(columns=["URL"], inplace=True)
-                
-                st.markdown(f"### 🔗 Top Recommendations (found in {elapsed_time:.2f}s):")
-                st.write(df.to_markdown(index=False), unsafe_allow_html=True)
-            else:
-                st.warning("No matching assessments found for your query.")
-    except Exception as e:
-        error_msg = f"Error processing query: {str(e)}"
-        logger.error(error_msg)
-        logger.error(traceback.format_exc())
-        st.error(f"❌ {error_msg}")
-        st.error("Check the logs for more details.")
-
-# Add footer with deployment information
-st.markdown("---")
-st.markdown("#### App Status Information")
-if "engine_ready" in st.session_state and st.session_state["engine_ready"]:
-    st.success("✅ Engine loaded successfully")
-    st.info(f"📊 Loaded {len(st.session_state['data'])} assessments")
-else:
-    st.error("❌ Engine not loaded")
+demo.launch()
