@@ -1,10 +1,10 @@
 from sentence_transformers import SentenceTransformer
 import json
-import faiss
 import numpy as np
 from typing import List, Dict, Any
 import os
 import logging
+from sklearn.neighbors import NearestNeighbors
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -69,21 +69,21 @@ def create_embeddings(data: List[Dict[str, Any]], model_name: str = "all-MiniLM-
         logger.error(f"Error creating embeddings: {e}")
         raise
 
-def create_faiss_index(embeddings: np.ndarray) -> faiss.IndexFlatL2:
-    """Create and populate FAISS index."""
+def create_index(embeddings: np.ndarray) -> NearestNeighbors:
+    """Create and populate sklearn NearestNeighbors index."""
     try:
-        dimension = embeddings.shape[1]
-        index = faiss.IndexFlatL2(dimension)
-        index.add(embeddings)
+        logger.info(f"Creating NearestNeighbors index for {len(embeddings)} embeddings")
+        index = NearestNeighbors(n_neighbors=10, algorithm='auto', metric='euclidean')
+        index.fit(embeddings)
         return index
     except Exception as e:
-        logger.error(f"Error creating FAISS index: {e}")
+        logger.error(f"Error creating NearestNeighbors index: {e}")
         raise
 
 def get_top_k_recommendations(
     query_text: str,
     model: SentenceTransformer,
-    index: faiss.IndexFlatL2,
+    index: NearestNeighbors,
     metadata: List[Dict[str, Any]],
     top_k: int = 10
 ) -> List[Dict[str, Any]]:
@@ -92,7 +92,11 @@ def get_top_k_recommendations(
         # Enhance the query with context about what we're looking for
         enhanced_query = f"Find assessments matching: {query_text}"
         query_embedding = model.encode([enhanced_query])
-        distances, indices = index.search(np.array(query_embedding), top_k)
+        
+        # Use NearestNeighbors kneighbors method instead of faiss search
+        distances, indices = index.kneighbors(query_embedding, n_neighbors=min(top_k, len(metadata)))
+        
+        # Get the results using the indices
         results = [metadata[i] for i in indices[0]]
         return results
     except Exception as e:
@@ -100,9 +104,18 @@ def get_top_k_recommendations(
         raise
 
 def setup_engine(json_path="shl_products.json"):
+    """Setup the recommendation engine."""
+    logger.info(f"Setting up recommendation engine using {json_path}")
     data = load_data(json_path)
+    logger.info(f"Loaded {len(data)} assessments from {json_path}")
+    
     embeddings, model = create_embeddings(data)
-    index = create_faiss_index(embeddings)
+    logger.info(f"Created embeddings with shape {embeddings.shape}")
+    
+    # Use the new create_index function
+    index = create_index(embeddings)
+    logger.info("Created NearestNeighbors index")
+    
     return model, index, data
 
 def main():
@@ -115,9 +128,9 @@ def main():
         logger.info("Creating embeddings...")
         embeddings, model = create_embeddings(data)
         
-        # Create FAISS index
-        logger.info("Creating FAISS index...")
-        index = create_faiss_index(embeddings)
+        # Create index
+        logger.info("Creating index...")
+        index = create_index(embeddings)
         
         # Get user query
         print("\nEnter your query (or press Ctrl+C to exit):")
