@@ -5,11 +5,14 @@ import numpy as np
 from typing import List, Dict, Any
 import os
 import logging
+from dotenv import load_dotenv
+import requests
+
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-
+load_dotenv()
 def load_data(file_path: str) -> List[Dict[str, Any]]:
     """Load and validate the scraped data."""
     try:
@@ -99,13 +102,104 @@ def get_top_k_recommendations(
         logger.error(f"Error getting recommendations: {e}")
         raise
 
+import requests
+
+def enrich_query_with_gemini(prompt: str, api_key: str) -> str:
+    """Uses Gemini Pro API to expand the query intelligently."""
+    try:
+        endpoint = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent"
+        headers = {"Content-Type": "application/json"}
+        payload = {
+            "contents": [{
+                "parts": [{"text": f"""You are an expert SHL assessment matcher. Expand this job query with relevant keywords and skills. Focus on job level, languages, assessment types etc.
+
+User Query: {prompt}
+Return only the enriched query.
+"""}]
+            }]
+        }
+        response = requests.post(f"{endpoint}?key={api_key}", headers=headers, json=payload)
+        response.raise_for_status()
+        text = response.json()['candidates'][0]['content']['parts'][0]['text']
+        return text.strip()
+    except Exception as e:
+        logger.error(f"LLM enrichment failed: {e}")
+        return prompt  # fallback to original prompt
+
+
 def setup_engine(json_path="shl_products.json"):
-    data = load_data(json_path)
-    embeddings, model = create_embeddings(data)
-    index = create_faiss_index(embeddings)
-    return model, index, data
+    """
+    Set up the recommendation engine with data loading, embeddings creation, and Gemini integration.
+    
+    Args:
+        json_path (str): Path to the JSON file containing assessment data
+        
+    Returns:
+        tuple: (model, index, data, gemini_api_key)
+    """
+    try:
+        # Load environment variables
+        load_dotenv()
+        gemini_api_key = os.getenv("GEMINI_API_KEY")
+        if not gemini_api_key:
+            logger.warning("GEMINI_API_KEY not found in environment variables. Query enrichment will be disabled.")
+        
+        # Load data
+        logger.info("Loading data...")
+        data = load_data(json_path)
+        
+        # Create embeddings
+        logger.info("Creating embeddings...")
+        embeddings, model = create_embeddings(data)
+        
+        # Create FAISS index
+        logger.info("Creating FAISS index...")
+        index = create_faiss_index(embeddings)
+        
+        return model, index, data, gemini_api_key
+        
+    except Exception as e:
+        logger.error(f"Error in setup_engine: {e}")
+        raise
 
 def main():
+    try:
+        api_key = os.getenv("GEMINI_API_KEY")  # make sure to export this in your terminal or .env
+        logger.info("Loading data...")
+        data = load_data("shl_products.json")
+        
+        logger.info("Creating embeddings...")
+        embeddings, model = create_embeddings(data)
+        
+        logger.info("Creating FAISS index...")
+        index = create_faiss_index(embeddings)
+
+        # User interaction
+        print("\nEnter your query (or press Ctrl+C to exit):")
+        query = input("> ")
+
+        # Step 1: Enrich query
+        logger.info("Enhancing query using Gemini...")
+        enhanced_query = enrich_query_with_gemini(query, api_key)
+        print(f"\n🔍 Enhanced Query: {enhanced_query}")
+
+        # Step 2: Get recommendations
+        logger.info("Getting recommendations...")
+        results = get_top_k_recommendations(enhanced_query, model, index, data)
+
+        # Step 3: Show results
+        print("\nTop Recommendations:")
+        for i, r in enumerate(results, 1):
+            print(f"\n{i}. {r['assessment_name']} ({r['assessment_type']}) - {r['url']}")
+            print(f"   Remote: {r['remote_testing']}, Adaptive/IRT: {r['adaptive_irt']}")
+            print(f"   Duration: {r['duration']}, Test Type: {r['test_type']}")
+            print(f"   Description: {r['description'][:200]}...")
+
+    except KeyboardInterrupt:
+        print("\nExiting...")
+    except Exception as e:
+        logger.error(f"An error occurred: {e}")
+
     try:
         # Load data
         logger.info("Loading data...")
