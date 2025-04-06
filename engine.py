@@ -7,6 +7,10 @@ import os
 import logging
 from dotenv import load_dotenv
 import requests
+import time
+from huggingface_hub.utils import HfHubHTTPError
+from pathlib import Path
+import shutil
 
 
 # Set up logging
@@ -54,7 +58,41 @@ def load_data(file_path: str) -> List[Dict[str, Any]]:
 def create_embeddings(data: List[Dict[str, Any]], model_name: str = "all-MiniLM-L6-v2") -> tuple[np.ndarray, SentenceTransformer]:
     """Create embeddings from assessment descriptions with additional context."""
     try:
-        model = SentenceTransformer(model_name)
+        # Set cache directory to ensure models are saved locally
+        import os
+        from pathlib import Path
+        import time
+        from huggingface_hub.utils import HfHubHTTPError
+        
+        # Create cache directory if it doesn't exist
+        cache_dir = Path(os.path.join(os.getcwd(), "model_cache"))
+        cache_dir.mkdir(exist_ok=True)
+        
+        # Try to load model with retries
+        max_retries = 3
+        retry_delay = 5
+        
+        for attempt in range(max_retries):
+            try:
+                logger.info(f"Loading model (attempt {attempt+1}/{max_retries})...")
+                model = SentenceTransformer(model_name, cache_folder=str(cache_dir))
+                break
+            except HfHubHTTPError as e:
+                if "429" in str(e) and attempt < max_retries - 1:
+                    wait_time = retry_delay * (2 ** attempt)  # Exponential backoff
+                    logger.warning(f"Rate limit hit, waiting {wait_time} seconds before retry...")
+                    time.sleep(wait_time)
+                else:
+                    # If we've exhausted retries or it's not a rate limit error
+                    if "429" in str(e):
+                        logger.error("Hugging Face rate limit exceeded. Manual workaround required:")
+                        logger.error("1. Download the model manually from https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2")
+                        logger.error(f"2. Save it to {cache_dir}/sentence-transformers_all-MiniLM-L6-v2")
+                    raise
+            except Exception as e:
+                logger.error(f"Error loading model: {e}")
+                raise
+        
         # Create rich text descriptions that include multiple fields
         rich_descriptions = []
         for item in data:
@@ -126,6 +164,43 @@ Return only the enriched query.
         logger.error(f"LLM enrichment failed: {e}")
         return prompt  # fallback to original prompt
 
+def download_model_manually(model_name="all-MiniLM-L6-v2", fallback_to_scikit=True):
+    """Manually download a model or fall back to scikit-learn if download fails."""
+    logger.info("Attempting manual model download...")
+    cache_dir = Path(os.path.join(os.getcwd(), "model_cache"))
+    cache_dir.mkdir(exist_ok=True)
+    
+    try:
+        from huggingface_hub import snapshot_download
+        model_path = snapshot_download(
+            repo_id=f"sentence-transformers/{model_name}", 
+            cache_dir=str(cache_dir),
+            local_files_only=False
+        )
+        logger.info(f"Model downloaded successfully to {model_path}")
+        return SentenceTransformer(model_path)
+    except Exception as e:
+        logger.error(f"Manual download failed: {e}")
+        
+        # Fall back to scikit-learn as a last resort
+        if fallback_to_scikit:
+            logger.warning("Using scikit-learn TfidfVectorizer as fallback")
+            from sklearn.feature_extraction.text import TfidfVectorizer
+            
+            class SklearnFallbackModel:
+                def __init__(self):
+                    self.vectorizer = TfidfVectorizer()
+                    self.is_fitted = False
+                
+                def encode(self, texts, show_progress_bar=False):
+                    if not self.is_fitted:
+                        self.vectorizer.fit(texts)
+                        self.is_fitted = True
+                    return self.vectorizer.transform(texts).toarray()
+            
+            return SklearnFallbackModel()
+        else:
+            raise
 
 def setup_engine(json_path="shl_products.json"):
     """
@@ -154,9 +229,24 @@ def setup_engine(json_path="shl_products.json"):
         logger.info("Loading data...")
         data = load_data(json_path)
         
-        # Create embeddings
+        # Create embeddings with retry logic
         logger.info("Creating embeddings...")
-        embeddings, model = create_embeddings(data)
+        try:
+            embeddings, model = create_embeddings(data)
+        except HfHubHTTPError as e:
+            if "429" in str(e):
+                logger.warning("Rate limit hit, trying manual download...")
+                model = download_model_manually()
+                rich_descriptions = []
+                for item in data:
+                    rich_text = f"""
+                    Assessment Type: {item['assessment_type']}
+                    Test Type: {item['test_type']}
+                    Job Levels: {item['job_levels']}
+                    Description: {item['description']}
+                    """
+                    rich_descriptions.append(rich_text.strip())
+                embeddings = model.encode(rich_descriptions, show_progress_bar=True)
         
         # Create FAISS index
         logger.info("Creating FAISS index...")
